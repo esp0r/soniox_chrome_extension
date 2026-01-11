@@ -1,10 +1,59 @@
 console.log('[Content] Content script loaded');
 
 let subtitleContainer = null;
+let innerContainer = null;
 let originalTextEl = null;
 let translationTextEl = null;
 let isDragging = false;
-let dragOffset = { x: 0, y: 0 };
+let dragStartX = 0;
+let dragStartY = 0;
+let initialLeft = 0;
+let initialTop = 0;
+
+let settings = {
+  fontSize: 20,
+  displayMode: 'both' // 'both', 'original', 'translation'
+};
+
+async function loadSettings() {
+  try {
+    const result = await chrome.storage.local.get(['fontSize', 'displayMode']);
+    if (result.fontSize) settings.fontSize = result.fontSize;
+    if (result.displayMode) settings.displayMode = result.displayMode;
+    console.log('[Content] Settings loaded:', settings);
+    applySettings();
+  } catch (err) {
+    console.log('[Content] Error loading settings:', err);
+  }
+}
+
+function applySettings() {
+  if (!subtitleContainer) return;
+  
+  const baseSize = settings.fontSize;
+  if (originalTextEl) {
+    originalTextEl.style.fontSize = baseSize + 'px';
+  }
+  if (translationTextEl) {
+    translationTextEl.style.fontSize = (baseSize - 2) + 'px';
+  }
+  
+  if (originalTextEl && translationTextEl) {
+    switch (settings.displayMode) {
+      case 'original':
+        originalTextEl.style.display = 'block';
+        translationTextEl.style.display = 'none';
+        break;
+      case 'translation':
+        originalTextEl.style.display = 'none';
+        translationTextEl.style.display = 'block';
+        break;
+      default:
+        originalTextEl.style.display = 'block';
+        translationTextEl.style.display = 'block';
+    }
+  }
+}
 
 function createSubtitleOverlay() {
   console.log('[Content] Creating subtitle overlay');
@@ -17,12 +66,11 @@ function createSubtitleOverlay() {
   subtitleContainer = document.createElement('div');
   subtitleContainer.id = 'soniox-subtitle-container';
   
-  const dragHint = document.createElement('div');
-  dragHint.id = 'soniox-drag-hint';
-  dragHint.textContent = '拖拽移动位置';
-  
-  const innerContainer = document.createElement('div');
+  innerContainer = document.createElement('div');
   innerContainer.id = 'soniox-subtitle-inner';
+  
+  const contentContainer = document.createElement('div');
+  contentContainer.id = 'soniox-subtitle-content';
   
   originalTextEl = document.createElement('div');
   originalTextEl.id = 'soniox-original-text';
@@ -32,28 +80,41 @@ function createSubtitleOverlay() {
   translationTextEl.id = 'soniox-translation-text';
   translationTextEl.className = 'soniox-subtitle-text soniox-translation';
   
-  innerContainer.appendChild(originalTextEl);
-  innerContainer.appendChild(translationTextEl);
-  subtitleContainer.appendChild(dragHint);
+  contentContainer.appendChild(originalTextEl);
+  contentContainer.appendChild(translationTextEl);
+  innerContainer.appendChild(contentContainer);
   subtitleContainer.appendChild(innerContainer);
   document.body.appendChild(subtitleContainer);
   
   setupDragListeners();
-  console.log('[Content] Subtitle overlay created with drag support');
+  applySettings();
+  console.log('[Content] Subtitle overlay created');
 }
 
 function setupDragListeners() {
-  subtitleContainer.addEventListener('mousedown', (e) => {
+  innerContainer.addEventListener('mousedown', (e) => {
+    const rect = innerContainer.getBoundingClientRect();
+    const resizeZone = 20;
+    const isInResizeZone = (rect.right - e.clientX < resizeZone) && 
+                           (rect.bottom - e.clientY < resizeZone);
+    
+    if (isInResizeZone) {
+      return;
+    }
+    
     isDragging = true;
     subtitleContainer.classList.add('dragging');
     
-    const rect = subtitleContainer.getBoundingClientRect();
-    dragOffset.x = e.clientX - rect.left - rect.width / 2;
-    dragOffset.y = e.clientY - rect.top - rect.height / 2;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    
+    const containerRect = subtitleContainer.getBoundingClientRect();
+    initialLeft = containerRect.left;
+    initialTop = containerRect.top;
     
     subtitleContainer.style.transform = 'none';
-    subtitleContainer.style.left = rect.left + rect.width / 2 + 'px';
-    subtitleContainer.style.top = rect.top + rect.height / 2 + 'px';
+    subtitleContainer.style.left = initialLeft + 'px';
+    subtitleContainer.style.top = initialTop + 'px';
     subtitleContainer.style.bottom = 'auto';
     
     e.preventDefault();
@@ -62,11 +123,11 @@ function setupDragListeners() {
   document.addEventListener('mousemove', (e) => {
     if (!isDragging) return;
     
-    const x = e.clientX - dragOffset.x;
-    const y = e.clientY - dragOffset.y;
+    const deltaX = e.clientX - dragStartX;
+    const deltaY = e.clientY - dragStartY;
     
-    subtitleContainer.style.left = x + 'px';
-    subtitleContainer.style.top = y + 'px';
+    subtitleContainer.style.left = (initialLeft + deltaX) + 'px';
+    subtitleContainer.style.top = (initialTop + deltaY) + 'px';
   });
   
   document.addEventListener('mouseup', () => {
@@ -78,17 +139,13 @@ function setupDragListeners() {
 }
 
 function updateSubtitles(subtitles) {
-  console.log('[Content] Updating subtitles:', 
-    'original:', subtitles.original?.slice(-30) || '',
-    'translation:', subtitles.translation?.slice(-30) || '');
-  
   if (!subtitleContainer) {
     createSubtitleOverlay();
   }
   
   subtitleContainer.style.display = 'block';
   
-  const maxLength = 200;
+  const maxLength = 300;
   let original = subtitles.original || '';
   let translation = subtitles.translation || '';
   
@@ -117,6 +174,7 @@ function removeSubtitleOverlay() {
   if (subtitleContainer) {
     subtitleContainer.remove();
     subtitleContainer = null;
+    innerContainer = null;
     originalTextEl = null;
     translationTextEl = null;
   }
@@ -137,7 +195,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   
+  if (message.type === 'UPDATE_SETTINGS') {
+    settings = { ...settings, ...message.settings };
+    applySettings();
+    sendResponse({ success: true });
+    return false;
+  }
+  
   return false;
 });
 
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local') {
+    if (changes.fontSize) settings.fontSize = changes.fontSize.newValue;
+    if (changes.displayMode) settings.displayMode = changes.displayMode.newValue;
+    applySettings();
+  }
+});
+
+loadSettings();
 console.log('[Content] Message listener registered');

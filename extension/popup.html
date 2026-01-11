@@ -101,6 +101,43 @@
     .row .form-group {
       flex: 1;
     }
+    .section-title {
+      font-size: 11px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin: 16px 0 8px 0;
+      padding-top: 12px;
+      border-top: 1px solid #3a3a5a;
+    }
+    .range-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .range-container input[type="range"] {
+      flex: 1;
+      padding: 0;
+      height: 6px;
+      -webkit-appearance: none;
+      background: #3a3a5a;
+      border-radius: 3px;
+      border: none;
+    }
+    .range-container input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      background: #00d4ff;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    .range-value {
+      min-width: 36px;
+      text-align: right;
+      font-size: 12px;
+      color: #00d4ff;
+    }
   </style>
 </head>
 <body>
@@ -135,6 +172,25 @@
         <option value="fr">French</option>
         <option value="de">German</option>
       </select>
+    </div>
+  </div>
+  
+  <div class="section-title">Subtitle Settings</div>
+  
+  <div class="form-group">
+    <label>Display Mode</label>
+    <select id="displayMode">
+      <option value="both">Both (Original + Translation)</option>
+      <option value="original">Original Only</option>
+      <option value="translation">Translation Only</option>
+    </select>
+  </div>
+  
+  <div class="form-group">
+    <label>Font Size</label>
+    <div class="range-container">
+      <input type="range" id="fontSize" min="12" max="36" value="20">
+      <span id="fontSizeValue" class="range-value">20px</span>
     </div>
   </div>
   

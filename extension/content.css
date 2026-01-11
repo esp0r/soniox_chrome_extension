@@ -4,12 +4,7 @@
   left: 50%;
   transform: translateX(-50%);
   z-index: 2147483647;
-  pointer-events: auto;
-  width: 90%;
-  max-width: 900px;
   display: none;
-  cursor: move;
-  user-select: none;
 }
 
 #soniox-subtitle-container.dragging {
@@ -23,35 +18,60 @@
   padding: 16px 24px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: move;
+  user-select: none;
+  resize: both;
+  overflow: auto;
+  width: 700px;
+  height: 120px;
+  min-width: 200px;
+  min-height: 60px;
+  max-width: 90vw;
+  max-height: 80vh;
 }
 
-#soniox-drag-hint {
-  position: absolute;
-  top: -24px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
-  opacity: 0;
-  transition: opacity 0.2s;
+#soniox-subtitle-inner::-webkit-resizer {
+  background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,0.3) 50%);
+  cursor: se-resize;
 }
 
-#soniox-subtitle-container:hover #soniox-drag-hint {
-  opacity: 1;
+#soniox-subtitle-inner::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+#soniox-subtitle-inner::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#soniox-subtitle-inner::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+#soniox-subtitle-content {
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  pointer-events: none;
 }
 
 .soniox-subtitle-text {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-size: 20px;
-  line-height: 1.5;
+  line-height: 1.4;
   text-align: center;
   word-wrap: break-word;
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  flex-shrink: 0;
 }
 
 #soniox-original-text {
   color: #ffffff;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 #soniox-translation-text {

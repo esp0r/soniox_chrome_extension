@@ -6,13 +6,25 @@ const statusDiv = document.getElementById('status');
 const apiKeyInput = document.getElementById('apiKey');
 const sourceLangSelect = document.getElementById('sourceLang');
 const targetLangSelect = document.getElementById('targetLang');
+const displayModeSelect = document.getElementById('displayMode');
+const fontSizeRange = document.getElementById('fontSize');
+const fontSizeValue = document.getElementById('fontSizeValue');
 
 async function loadSettings() {
   console.log('[Popup] Loading settings from storage');
-  const result = await chrome.storage.local.get(['apiKey', 'sourceLang', 'targetLang', 'isCapturing']);
+  const result = await chrome.storage.local.get([
+    'apiKey', 'sourceLang', 'targetLang', 'isCapturing',
+    'fontSize', 'displayMode'
+  ]);
+  
   if (result.apiKey) apiKeyInput.value = result.apiKey;
   if (result.sourceLang) sourceLangSelect.value = result.sourceLang;
   if (result.targetLang) targetLangSelect.value = result.targetLang;
+  if (result.displayMode) displayModeSelect.value = result.displayMode;
+  if (result.fontSize) {
+    fontSizeRange.value = result.fontSize;
+    fontSizeValue.textContent = result.fontSize + 'px';
+  }
   
   updateUI(result.isCapturing);
   console.log('[Popup] Settings loaded, isCapturing:', result.isCapturing);
@@ -23,7 +35,9 @@ async function saveSettings() {
   await chrome.storage.local.set({
     apiKey: apiKeyInput.value,
     sourceLang: sourceLangSelect.value,
-    targetLang: targetLangSelect.value
+    targetLang: targetLangSelect.value,
+    displayMode: displayModeSelect.value,
+    fontSize: parseInt(fontSizeRange.value)
   });
 }
 
@@ -45,6 +59,13 @@ function showError(message) {
   statusDiv.className = 'status error';
   statusDiv.textContent = '❌ ' + message;
 }
+
+fontSizeRange.addEventListener('input', () => {
+  fontSizeValue.textContent = fontSizeRange.value + 'px';
+});
+
+fontSizeRange.addEventListener('change', saveSettings);
+displayModeSelect.addEventListener('change', saveSettings);
 
 startBtn.addEventListener('click', async () => {
   console.log('[Popup] Start button clicked');
