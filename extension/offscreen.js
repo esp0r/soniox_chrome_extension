@@ -75,7 +75,8 @@ function processTokens(tokens) {
   let nonFinalTokens = [];
   
   for (const token of tokens) {
-    if (token.text) {
+    // 过滤掉 <end> 和 <fin> 等特殊标记
+    if (token.text && !token.text.startsWith('<')) {
       if (token.is_final) {
         finalTokens.push(token);
       } else {

@@ -4,10 +4,16 @@
   left: 50%;
   transform: translateX(-50%);
   z-index: 2147483647;
-  pointer-events: none;
+  pointer-events: auto;
   width: 90%;
   max-width: 900px;
   display: none;
+  cursor: move;
+  user-select: none;
+}
+
+#soniox-subtitle-container.dragging {
+  opacity: 0.8;
 }
 
 #soniox-subtitle-inner {
@@ -17,6 +23,21 @@
   padding: 16px 24px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+#soniox-drag-hint {
+  position: absolute;
+  top: -24px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+#soniox-subtitle-container:hover #soniox-drag-hint {
+  opacity: 1;
 }
 
 .soniox-subtitle-text {

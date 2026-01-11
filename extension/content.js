@@ -3,6 +3,8 @@ console.log('[Content] Content script loaded');
 let subtitleContainer = null;
 let originalTextEl = null;
 let translationTextEl = null;
+let isDragging = false;
+let dragOffset = { x: 0, y: 0 };
 
 function createSubtitleOverlay() {
   console.log('[Content] Creating subtitle overlay');
@@ -14,6 +16,10 @@ function createSubtitleOverlay() {
   
   subtitleContainer = document.createElement('div');
   subtitleContainer.id = 'soniox-subtitle-container';
+  
+  const dragHint = document.createElement('div');
+  dragHint.id = 'soniox-drag-hint';
+  dragHint.textContent = '拖拽移动位置';
   
   const innerContainer = document.createElement('div');
   innerContainer.id = 'soniox-subtitle-inner';
@@ -28,10 +34,47 @@ function createSubtitleOverlay() {
   
   innerContainer.appendChild(originalTextEl);
   innerContainer.appendChild(translationTextEl);
+  subtitleContainer.appendChild(dragHint);
   subtitleContainer.appendChild(innerContainer);
   document.body.appendChild(subtitleContainer);
   
-  console.log('[Content] Subtitle overlay created');
+  setupDragListeners();
+  console.log('[Content] Subtitle overlay created with drag support');
+}
+
+function setupDragListeners() {
+  subtitleContainer.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    subtitleContainer.classList.add('dragging');
+    
+    const rect = subtitleContainer.getBoundingClientRect();
+    dragOffset.x = e.clientX - rect.left - rect.width / 2;
+    dragOffset.y = e.clientY - rect.top - rect.height / 2;
+    
+    subtitleContainer.style.transform = 'none';
+    subtitleContainer.style.left = rect.left + rect.width / 2 + 'px';
+    subtitleContainer.style.top = rect.top + rect.height / 2 + 'px';
+    subtitleContainer.style.bottom = 'auto';
+    
+    e.preventDefault();
+  });
+  
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    
+    const x = e.clientX - dragOffset.x;
+    const y = e.clientY - dragOffset.y;
+    
+    subtitleContainer.style.left = x + 'px';
+    subtitleContainer.style.top = y + 'px';
+  });
+  
+  document.addEventListener('mouseup', () => {
+    if (isDragging) {
+      isDragging = false;
+      subtitleContainer.classList.remove('dragging');
+    }
+  });
 }
 
 function updateSubtitles(subtitles) {
