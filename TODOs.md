@@ -1,0 +1,3 @@
+- 支持translation context
+- 支持Speaker diarization，并手动屏蔽某些speaker
+- 雕一下字幕UI
