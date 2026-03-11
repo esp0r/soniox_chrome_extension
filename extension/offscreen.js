@@ -9,6 +9,7 @@ let scriptProcessor = null;
 let audioElement = null;
 let isCapturing = false;
 let finalTokens = [];
+let sentFinalCount = 0;
 let currentConfig = null;
 
 function getWebSocketConfig(config) {
@@ -71,9 +72,9 @@ function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
 
 function processTokens(tokens) {
   console.log('[Offscreen] Processing tokens:', tokens.length);
-  
+
   let nonFinalTokens = [];
-  
+
   for (const token of tokens) {
     // 过滤掉 <end> 和 <fin> 等特殊标记
     if (token.text && !token.text.startsWith('<')) {
@@ -84,37 +85,52 @@ function processTokens(tokens) {
       }
     }
   }
-  
-  const allTokens = [...finalTokens, ...nonFinalTokens];
-  
-  let originalText = '';
-  let translationText = '';
-  
-  for (const token of allTokens) {
-    const isTranslation = token.translation_status === 'translation';
-    if (isTranslation) {
-      translationText += token.text;
+
+  // 新增的已确认 token（自上次发送后）
+  const newFinalTokens = finalTokens.slice(sentFinalCount);
+
+  let newFinalOriginal = '';
+  let newFinalTranslation = '';
+  for (const token of newFinalTokens) {
+    if (token.translation_status === 'translation') {
+      newFinalTranslation += token.text;
     } else {
-      originalText += token.text;
+      newFinalOriginal += token.text;
     }
   }
-  
+
+  // 临时 token（正在识别中，会频繁变化）
+  let interimOriginal = '';
+  let interimTranslation = '';
+  for (const token of nonFinalTokens) {
+    if (token.translation_status === 'translation') {
+      interimTranslation += token.text;
+    } else {
+      interimOriginal += token.text;
+    }
+  }
+
+  sentFinalCount = finalTokens.length;
+
   const recentFinalCount = 50;
   if (finalTokens.length > recentFinalCount * 2) {
     finalTokens = finalTokens.slice(-recentFinalCount);
+    sentFinalCount = finalTokens.length;
     console.log('[Offscreen] Trimmed final tokens to', finalTokens.length);
   }
-  
+
   return {
-    original: originalText.trim(),
-    translation: translationText.trim()
+    newFinalOriginal: newFinalOriginal.trim(),
+    newFinalTranslation: newFinalTranslation.trim(),
+    interimOriginal: interimOriginal.trim(),
+    interimTranslation: interimTranslation.trim()
   };
 }
 
 function sendSubtitleUpdate(subtitles) {
-  console.log('[Offscreen] Sending subtitle update:', 
-    'original:', subtitles.original.slice(-50),
-    'translation:', subtitles.translation.slice(-50));
+  console.log('[Offscreen] Sending subtitle update:',
+    'newFinal:', subtitles.newFinalOriginal.slice(-50),
+    'interim:', subtitles.interimOriginal.slice(-50));
   
   chrome.runtime.sendMessage({
     type: 'SUBTITLE_UPDATE',
@@ -181,6 +197,7 @@ async function startCapture(streamId, config) {
   console.log('[Offscreen] Starting capture with streamId:', streamId);
   currentConfig = config;
   finalTokens = [];
+  sentFinalCount = 0;
   
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -296,6 +313,7 @@ function stopCapture() {
   }
   
   finalTokens = [];
+  sentFinalCount = 0;
   currentConfig = null;
   
   console.log('[Offscreen] Capture stopped');

@@ -4,6 +4,8 @@ let subtitleContainer = null;
 let innerContainer = null;
 let originalTextEl = null;
 let translationTextEl = null;
+let originalInterimEl = null;
+let translationInterimEl = null;
 let isDragging = false;
 let dragStartX = 0;
 let dragStartY = 0;
@@ -75,11 +77,19 @@ function createSubtitleOverlay() {
   originalTextEl = document.createElement('div');
   originalTextEl.id = 'soniox-original-text';
   originalTextEl.className = 'soniox-subtitle-text';
-  
+
+  originalInterimEl = document.createElement('span');
+  originalInterimEl.className = 'soniox-interim';
+  originalTextEl.appendChild(originalInterimEl);
+
   translationTextEl = document.createElement('div');
   translationTextEl.id = 'soniox-translation-text';
   translationTextEl.className = 'soniox-subtitle-text soniox-translation';
-  
+
+  translationInterimEl = document.createElement('span');
+  translationInterimEl.className = 'soniox-interim';
+  translationTextEl.appendChild(translationInterimEl);
+
   contentContainer.appendChild(originalTextEl);
   contentContainer.appendChild(translationTextEl);
   innerContainer.appendChild(contentContainer);
@@ -138,34 +148,58 @@ function setupDragListeners() {
   });
 }
 
+const MAX_FINALIZED_SPANS = 30;
+
+function appendFinalizedText(container, interimEl, text) {
+  if (!text) return;
+  const span = document.createElement('span');
+  span.className = 'soniox-finalized';
+  span.textContent = text;
+  container.insertBefore(span, interimEl);
+}
+
+function trimOldSpans(container) {
+  const finalized = container.querySelectorAll('.soniox-finalized');
+  const excess = finalized.length - MAX_FINALIZED_SPANS;
+  for (let i = 0; i < excess; i++) {
+    finalized[i].remove();
+  }
+}
+
 function updateSubtitles(subtitles) {
   if (!subtitleContainer) {
     createSubtitleOverlay();
   }
-  
+
   subtitleContainer.style.display = 'block';
-  
-  const maxLength = 300;
-  let original = subtitles.original || '';
-  let translation = subtitles.translation || '';
-  
-  if (original.length > maxLength) {
-    original = '...' + original.slice(-maxLength);
-  }
-  if (translation.length > maxLength) {
-    translation = '...' + translation.slice(-maxLength);
-  }
-  
-  originalTextEl.textContent = original;
-  translationTextEl.textContent = translation;
+
+  const { newFinalOriginal, newFinalTranslation, interimOriginal, interimTranslation } = subtitles;
+
+  // 追加已确认的文本（稳定，不会再变）
+  appendFinalizedText(originalTextEl, originalInterimEl, newFinalOriginal);
+  appendFinalizedText(translationTextEl, translationInterimEl, newFinalTranslation);
+
+  // 更新临时文本（正在识别中）
+  originalInterimEl.textContent = interimOriginal || '';
+  translationInterimEl.textContent = interimTranslation || '';
+
+  // 裁剪过多的已确认 span
+  trimOldSpans(originalTextEl);
+  trimOldSpans(translationTextEl);
+
+  // 自动滚动到最新内容
+  innerContainer.scrollTop = innerContainer.scrollHeight;
 }
 
 function hideSubtitles() {
   console.log('[Content] Hiding subtitles');
   if (subtitleContainer) {
     subtitleContainer.style.display = 'none';
-    originalTextEl.textContent = '';
-    translationTextEl.textContent = '';
+    // 清除所有已确认的 span 和临时文本
+    originalTextEl.querySelectorAll('.soniox-finalized').forEach(el => el.remove());
+    translationTextEl.querySelectorAll('.soniox-finalized').forEach(el => el.remove());
+    originalInterimEl.textContent = '';
+    translationInterimEl.textContent = '';
   }
 }
 
@@ -177,6 +211,8 @@ function removeSubtitleOverlay() {
     innerContainer = null;
     originalTextEl = null;
     translationTextEl = null;
+    originalInterimEl = null;
+    translationInterimEl = null;
   }
 }
 
