@@ -14,14 +14,16 @@ let initialTop = 0;
 
 let settings = {
   fontSize: 20,
-  displayMode: 'both' // 'both', 'original', 'translation'
+  displayMode: 'both', // 'both', 'original', 'translation'
+  maxLines: 2
 };
 
 async function loadSettings() {
   try {
-    const result = await chrome.storage.local.get(['fontSize', 'displayMode']);
+    const result = await chrome.storage.local.get(['fontSize', 'displayMode', 'maxLines']);
     if (result.fontSize) settings.fontSize = result.fontSize;
     if (result.displayMode) settings.displayMode = result.displayMode;
+    if (result.maxLines) settings.maxLines = result.maxLines;
     console.log('[Content] Settings loaded:', settings);
     applySettings();
   } catch (err) {
@@ -31,15 +33,21 @@ async function loadSettings() {
 
 function applySettings() {
   if (!subtitleContainer) return;
-  
+
   const baseSize = settings.fontSize;
+  const lineHeight = 1.4;
+
   if (originalTextEl) {
     originalTextEl.style.fontSize = baseSize + 'px';
+    originalTextEl.style.height = (baseSize * lineHeight * settings.maxLines) + 'px';
+    originalTextEl.style.overflow = 'hidden';
   }
   if (translationTextEl) {
     translationTextEl.style.fontSize = (baseSize - 2) + 'px';
+    translationTextEl.style.height = ((baseSize - 2) * lineHeight * settings.maxLines) + 'px';
+    translationTextEl.style.overflow = 'hidden';
   }
-  
+
   if (originalTextEl && translationTextEl) {
     switch (settings.displayMode) {
       case 'original':
@@ -187,8 +195,9 @@ function updateSubtitles(subtitles) {
   trimOldSpans(originalTextEl);
   trimOldSpans(translationTextEl);
 
-  // 自动滚动到最新内容
-  innerContainer.scrollTop = innerContainer.scrollHeight;
+  // 自动滚动每个文本元素到最新内容
+  originalTextEl.scrollTop = originalTextEl.scrollHeight;
+  translationTextEl.scrollTop = translationTextEl.scrollHeight;
 }
 
 function hideSubtitles() {
@@ -245,6 +254,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
     if (changes.fontSize) settings.fontSize = changes.fontSize.newValue;
     if (changes.displayMode) settings.displayMode = changes.displayMode.newValue;
+    if (changes.maxLines) settings.maxLines = changes.maxLines.newValue;
     applySettings();
   }
 });

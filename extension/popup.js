@@ -9,14 +9,16 @@ const targetLangSelect = document.getElementById('targetLang');
 const displayModeSelect = document.getElementById('displayMode');
 const fontSizeRange = document.getElementById('fontSize');
 const fontSizeValue = document.getElementById('fontSizeValue');
+const maxLinesRange = document.getElementById('maxLines');
+const maxLinesValue = document.getElementById('maxLinesValue');
 
 async function loadSettings() {
   console.log('[Popup] Loading settings from storage');
   const result = await chrome.storage.local.get([
     'apiKey', 'sourceLang', 'targetLang', 'isCapturing',
-    'fontSize', 'displayMode'
+    'fontSize', 'displayMode', 'maxLines'
   ]);
-  
+
   if (result.apiKey) apiKeyInput.value = result.apiKey;
   if (result.sourceLang) sourceLangSelect.value = result.sourceLang;
   if (result.targetLang) targetLangSelect.value = result.targetLang;
@@ -24,6 +26,10 @@ async function loadSettings() {
   if (result.fontSize) {
     fontSizeRange.value = result.fontSize;
     fontSizeValue.textContent = result.fontSize + 'px';
+  }
+  if (result.maxLines) {
+    maxLinesRange.value = result.maxLines;
+    maxLinesValue.textContent = result.maxLines;
   }
   
   updateUI(result.isCapturing);
@@ -37,7 +43,8 @@ async function saveSettings() {
     sourceLang: sourceLangSelect.value,
     targetLang: targetLangSelect.value,
     displayMode: displayModeSelect.value,
-    fontSize: parseInt(fontSizeRange.value)
+    fontSize: parseInt(fontSizeRange.value),
+    maxLines: parseInt(maxLinesRange.value)
   });
 }
 
@@ -63,8 +70,12 @@ function showError(message) {
 fontSizeRange.addEventListener('input', () => {
   fontSizeValue.textContent = fontSizeRange.value + 'px';
 });
+maxLinesRange.addEventListener('input', () => {
+  maxLinesValue.textContent = maxLinesRange.value;
+});
 
 fontSizeRange.addEventListener('change', saveSettings);
+maxLinesRange.addEventListener('change', saveSettings);
 displayModeSelect.addEventListener('change', saveSettings);
 
 startBtn.addEventListener('click', async () => {
