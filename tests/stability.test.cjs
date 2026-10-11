@@ -62,9 +62,22 @@ async function running() {
   assert.equal(resolved, false);
   const config = JSON.parse(ws.sent[0]);
   assert.equal(config.model, 'stt-rt-v5'); assert.equal('api_key' in config, false);
+  assert.deepEqual(config.translation, { type: 'one_way', target_language: 'zh' });
+  assert.deepEqual(config.language_hints, ['ja']);
   ws.message({ tokens: [], total_audio_proc_ms: 0 });
   assert.equal((await started).success, true);
   assert.equal(JSON.stringify(h.messages).includes('test-key-not-real'), false);
+});
+
+test('auto detection omits language hints and retains the translation target', () => {
+  const h = harness();
+  for (const sourceLang of ['auto', '', undefined]) {
+    h.ctx.configInput = { sourceLang, targetLang: 'zh' };
+    const config = JSON.parse(h.run('JSON.stringify(getWebSocketConfig(configInput))'));
+    assert.equal('language_hints' in config, false);
+    assert.equal(config.enable_language_identification, true);
+    assert.deepEqual(config.translation, { type: 'one_way', target_language: 'zh' });
+  }
 });
 
 test('bad authentication fails after open without retries or leaked capture', async () => {

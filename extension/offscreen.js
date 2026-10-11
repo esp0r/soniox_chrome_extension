@@ -10,11 +10,11 @@ function getWebSocketConfig(config) {
   return {
     model: 'stt-rt-v5',
     audio_format: 'pcm_s16le', sample_rate: 16000, num_channels: 1,
-    language_hints: [...new Set([config.sourceLang, config.targetLang])],
+    ...(config.sourceLang && config.sourceLang !== 'auto' ? { language_hints: [config.sourceLang] } : {}),
     enable_language_identification: true,
     enable_speaker_diarization: true,
     enable_endpoint_detection: true,
-    translation: { type: 'two_way', language_a: config.sourceLang, language_b: config.targetLang }
+    translation: { type: 'one_way', target_language: config.targetLang }
   };
 }
 

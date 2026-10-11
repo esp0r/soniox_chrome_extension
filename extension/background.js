@@ -61,7 +61,6 @@ function handleStartCapture(tabId, config) {
     if (ACTIVE_STATES.includes(status.state)) return { success: false, error: 'Stop the current capture first.' };
     try {
       if (!config?.apiKey?.trim()) throw new Error('Please enter your API key.');
-      if (config.sourceLang === config.targetLang) throw new Error('Source and target languages must be different.');
       setupStatus = { state: 'connecting', tabId, error: null };
       await saveStatus(setupStatus);
       await injectContentScript(tabId);
