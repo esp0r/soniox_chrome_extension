@@ -1,345 +1,291 @@
-console.log('[Offscreen] Offscreen script loaded');
-
 const SONIOX_WEBSOCKET_URL = 'wss://stt-rt.soniox.com/transcribe-websocket';
-
-let mediaStream = null;
-let audioContext = null;
-let websocket = null;
-let scriptProcessor = null;
-let audioElement = null;
-let isCapturing = false;
-let finalTokens = [];
-let sentFinalCount = 0;
-let currentConfig = null;
+const CONNECTION_TIMEOUT_MS = 20000;
+const FINISH_TIMEOUT_MS = 5000;
+const MAX_RETRIES = 2;
+const MAX_BUFFERED_BYTES = 16000 * 2 * 5;
+let session = null;
+let lastStatus = { state: 'idle', tabId: null, error: null };
 
 function getWebSocketConfig(config) {
-  console.log('[Offscreen] Building WebSocket config');
-  
-  const wsConfig = {
-    api_key: config.apiKey,
-    model: 'stt-rt-v3',
-    audio_format: 'pcm_s16le',
-    sample_rate: 16000,
-    num_channels: 1,
-    language_hints: [config.sourceLang, config.targetLang],
+  return {
+    model: 'stt-rt-v5',
+    audio_format: 'pcm_s16le', sample_rate: 16000, num_channels: 1,
+    language_hints: [...new Set([config.sourceLang, config.targetLang])],
     enable_language_identification: true,
     enable_speaker_diarization: true,
     enable_endpoint_detection: true,
-    translation: {
-      type: 'two_way',
-      language_a: config.sourceLang,
-      language_b: config.targetLang
-    }
+    translation: { type: 'two_way', language_a: config.sourceLang, language_b: config.targetLang }
   };
-  
-  console.log('[Offscreen] WebSocket config:', JSON.stringify(wsConfig, null, 2));
-  return wsConfig;
 }
 
-function floatTo16BitPCM(float32Array) {
-  const int16Array = new Int16Array(float32Array.length);
-  for (let i = 0; i < float32Array.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32Array[i]));
-    int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+function floatTo16BitPCM(input) {
+  const output = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const value = Math.max(-1, Math.min(1, input[i]));
+    output[i] = value < 0 ? value * 0x8000 : value * 0x7fff;
   }
-  return int16Array;
+  return output;
 }
 
-function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
-  if (inputSampleRate === outputSampleRate) {
-    return buffer;
-  }
-  const ratio = inputSampleRate / outputSampleRate;
-  const newLength = Math.round(buffer.length / ratio);
-  const result = new Float32Array(newLength);
-  let offsetResult = 0;
-  let offsetBuffer = 0;
-  
-  while (offsetResult < result.length) {
-    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
-    let accum = 0;
-    let count = 0;
-    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
-      accum += buffer[i];
-      count++;
+// Carry the fractional position between callbacks: 4096 is not divisible by 3.
+function downsampleBuffer(input, inputRate, outputRate, resampler) {
+  const ratio = inputRate / outputRate;
+  const output = [];
+  for (const value of input) {
+    resampler.sum += value;
+    resampler.count++;
+    resampler.phase++;
+    if (resampler.phase >= ratio) {
+      output.push(resampler.sum / resampler.count);
+      resampler.phase -= ratio;
+      resampler.sum = 0;
+      resampler.count = 0;
     }
-    result[offsetResult] = accum / count;
-    offsetResult++;
-    offsetBuffer = nextOffsetBuffer;
+  }
+  return new Float32Array(output);
+}
+
+function processTokens(tokens) {
+  const result = { newFinalOriginal: '', newFinalTranslation: '', interimOriginal: '', interimTranslation: '' };
+  for (const token of tokens) {
+    if (typeof token.text !== 'string' || ['<end>', '<fin>'].includes(token.text)) continue;
+    const key = (token.is_final ? 'newFinal' : 'interim') +
+      (token.translation_status === 'translation' ? 'Translation' : 'Original');
+    result[key] += token.text;
   }
   return result;
 }
 
-function processTokens(tokens) {
-  console.log('[Offscreen] Processing tokens:', tokens.length);
-
-  let nonFinalTokens = [];
-
-  for (const token of tokens) {
-    // 过滤掉 <end> 和 <fin> 等特殊标记
-    if (token.text && !token.text.startsWith('<')) {
-      if (token.is_final) {
-        finalTokens.push(token);
-      } else {
-        nonFinalTokens.push(token);
-      }
-    }
-  }
-
-  // 新增的已确认 token（自上次发送后）
-  const newFinalTokens = finalTokens.slice(sentFinalCount);
-
-  let newFinalOriginal = '';
-  let newFinalTranslation = '';
-  for (const token of newFinalTokens) {
-    if (token.translation_status === 'translation') {
-      newFinalTranslation += token.text;
-    } else {
-      newFinalOriginal += token.text;
-    }
-  }
-
-  // 临时 token（正在识别中，会频繁变化）
-  let interimOriginal = '';
-  let interimTranslation = '';
-  for (const token of nonFinalTokens) {
-    if (token.translation_status === 'translation') {
-      interimTranslation += token.text;
-    } else {
-      interimOriginal += token.text;
-    }
-  }
-
-  sentFinalCount = finalTokens.length;
-
-  const recentFinalCount = 50;
-  if (finalTokens.length > recentFinalCount * 2) {
-    finalTokens = finalTokens.slice(-recentFinalCount);
-    sentFinalCount = finalTokens.length;
-    console.log('[Offscreen] Trimmed final tokens to', finalTokens.length);
-  }
-
-  return {
-    newFinalOriginal: newFinalOriginal.trim(),
-    newFinalTranslation: newFinalTranslation.trim(),
-    interimOriginal: interimOriginal.trim(),
-    interimTranslation: interimTranslation.trim()
-  };
+function publishStatus(s, state, error = null) {
+  s.state = state;
+  lastStatus = { state, tabId: s.tabId, error };
+  // Never log credentials, configuration, or server-echoed payloads.
+  return chrome.runtime.sendMessage({ type: 'CAPTURE_STATE', status: lastStatus }).catch(() => {});
 }
 
-function sendSubtitleUpdate(subtitles) {
-  console.log('[Offscreen] Sending subtitle update:',
-    'newFinal:', subtitles.newFinalOriginal.slice(-50),
-    'interim:', subtitles.interimOriginal.slice(-50));
-  
-  chrome.runtime.sendMessage({
-    type: 'SUBTITLE_UPDATE',
-    subtitles
-  }).catch(err => {
-    console.log('[Offscreen] Error sending subtitle update:', err);
-  });
+function releaseAudio(s) {
+  if (s.processor) {
+    s.processor.onaudioprocess = null;
+    s.processor.disconnect();
+    s.processor = null;
+  }
+  if (s.audio) {
+    s.audio.pause();
+    s.audio.srcObject = null;
+    s.audio.remove();
+    s.audio = null;
+  }
+  if (s.stream) {
+    s.stream.getTracks().forEach(track => { track.onended = null; track.stop(); });
+    s.stream = null;
+  }
+  if (s.context) {
+    void s.context.close().catch(() => {});
+    s.context = null;
+  }
 }
 
-function connectWebSocket(config) {
-  console.log('[Offscreen] Connecting to Soniox WebSocket');
-  
-  websocket = new WebSocket(SONIOX_WEBSOCKET_URL);
-  
-  websocket.onopen = () => {
-    console.log('[Offscreen] WebSocket connected');
-    const wsConfig = getWebSocketConfig(config);
-    websocket.send(JSON.stringify(wsConfig));
-    console.log('[Offscreen] Sent config to WebSocket');
-  };
-  
-  websocket.onmessage = (event) => {
-    try {
-      const res = JSON.parse(event.data);
-      
-      if (res.error_code) {
-        console.error('[Offscreen] WebSocket error:', res.error_code, res.error_message);
-        chrome.runtime.sendMessage({
-          type: 'CAPTURE_ERROR',
-          error: `Soniox error: ${res.error_code} - ${res.error_message}`
-        });
-        stopCapture();
-        return;
-      }
-      
-      if (res.tokens && res.tokens.length > 0) {
-        console.log('[Offscreen] Received tokens:', res.tokens.length, 
-          'final_audio:', res.final_audio_proc_ms, 
-          'total_audio:', res.total_audio_proc_ms);
-        
-        const subtitles = processTokens(res.tokens);
-        sendSubtitleUpdate(subtitles);
-      }
-      
-      if (res.finished) {
-        console.log('[Offscreen] Session finished');
-      }
-    } catch (err) {
-      console.error('[Offscreen] Error parsing WebSocket message:', err);
-    }
-  };
-  
-  websocket.onerror = (error) => {
-    console.error('[Offscreen] WebSocket error:', error);
-  };
-  
-  websocket.onclose = (event) => {
-    console.log('[Offscreen] WebSocket closed:', event.code, event.reason);
-    websocket = null;
-  };
+function detachSocket(s) {
+  clearTimeout(s.connectionTimer);
+  clearInterval(s.keepaliveTimer);
+  const ws = s.ws;
+  s.ws = null;
+  if (ws) {
+    ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+    if (ws.readyState < WebSocket.CLOSING) ws.close();
+  }
 }
 
-async function startCapture(streamId, config) {
-  console.log('[Offscreen] Starting capture with streamId:', streamId);
-  currentConfig = config;
-  finalTokens = [];
-  sentFinalCount = 0;
-  
+async function completeSession(s, error = null) {
+  if (s.completed) return;
+  s.completed = true;
+  clearTimeout(s.setupTimer);
+  clearTimeout(s.retryTimer);
+  clearTimeout(s.finishTimer);
+  detachSocket(s);
+  releaseAudio(s);
+  s.config = null;
+  // Deliver queued final subtitles before acknowledging stop.
+  await s.delivery;
+  await publishStatus(s, error ? 'error' : 'idle', error);
+  if (session === s) session = null;
+  s.resolveStart({ success: false, error: error || 'Capture stopped before starting' });
+  s.resolveStop?.({ success: !error, error });
+}
+
+function connectionFailed(s, error, retryable) {
+  if (s.completed) return;
+  detachSocket(s);
+  if (s.state === 'stopping') {
+    void completeSession(s, error);
+    return;
+  }
+  if (retryable && s.retries < MAX_RETRIES) {
+    s.retries++;
+    void publishStatus(s, 'reconnecting');
+    // A reconnect is a new stream. Clear interim text without replaying committed audio.
+    s.delivery = s.delivery.then(() => chrome.runtime.sendMessage({
+      type: 'SUBTITLE_UPDATE', tabId: s.tabId, subtitles: processTokens([])
+    })).catch(() => {});
+    s.retryTimer = setTimeout(() => connectWebSocket(s), 1000 * 2 ** (s.retries - 1));
+  } else {
+    void completeSession(s, error);
+  }
+}
+
+function connectWebSocket(s) {
+  if (s.completed || s.state === 'stopping') return;
+  let ws;
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        mandatory: {
-          chromeMediaSource: 'tab',
-          chromeMediaSourceId: streamId
+    ws = new WebSocket(SONIOX_WEBSOCKET_URL, ['soniox-api-key', s.config.apiKey]);
+  } catch {
+    void completeSession(s, 'Cannot create connection. Check the API key format.');
+    return;
+  }
+  s.ws = ws;
+  s.connectionTimer = setTimeout(() => connectionFailed(s, 'Soniox connection timed out.', true), CONNECTION_TIMEOUT_MS);
+  ws.onopen = () => {
+    try {
+      ws.send(JSON.stringify(getWebSocketConfig(s.config)));
+      s.keepaliveTimer = setInterval(() => {
+        if (s.ws === ws && ws.readyState === WebSocket.OPEN && s.state !== 'stopping') {
+          try { ws.send(JSON.stringify({ type: 'keepalive' })); }
+          catch { connectionFailed(s, 'Connection interrupted.', true); }
         }
-      },
-      video: false
-    });
-    
-    console.log('[Offscreen] Got media stream');
-    
-    // 创建 Audio 元素来播放原始音频（避免静音）
-    audioElement = document.createElement('audio');
-    audioElement.srcObject = mediaStream;
-    audioElement.volume = 1.0;
-    document.body.appendChild(audioElement);
-    audioElement.play()
-      .then(() => console.log('[Offscreen] Audio playback started'))
-      .catch(err => console.log('[Offscreen] Audio play error:', err));
-    console.log('[Offscreen] Audio element created for playback');
-    
-    audioContext = new AudioContext({ sampleRate: 48000 });
-    console.log('[Offscreen] AudioContext created, state:', audioContext.state, 'sampleRate:', audioContext.sampleRate);
-    
-    // 确保 AudioContext 处于运行状态
-    if (audioContext.state === 'suspended') {
-      await audioContext.resume();
-      console.log('[Offscreen] AudioContext resumed, state:', audioContext.state);
+      }, 20000);
+    } catch { connectionFailed(s, 'Cannot configure Soniox connection.', true); }
+  };
+  ws.onmessage = event => {
+    if (s.ws !== ws || s.completed) return;
+    let response;
+    try { response = JSON.parse(event.data); }
+    catch { connectionFailed(s, 'Invalid response from Soniox.', false); return; }
+    if (!response || typeof response !== 'object') {
+      connectionFailed(s, 'Invalid response from Soniox.', false); return;
     }
-    
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-    
-    let audioChunkCount = 0;
-    scriptProcessor.onaudioprocess = (event) => {
-      audioChunkCount++;
-      if (audioChunkCount % 50 === 1) {
-        console.log('[Offscreen] Audio chunk #' + audioChunkCount, 
-          'isCapturing:', isCapturing, 
-          'ws state:', websocket?.readyState);
+    if (response.error_code || response.error_type) {
+      const code = Number(response.error_code);
+      const type = typeof response.error_type === 'string' && /^[a-z_]+$/.test(response.error_type)
+        ? response.error_type : 'request_failed';
+      const requestId = typeof response.request_id === 'string' && /^[a-zA-Z0-9-]+$/.test(response.request_id)
+        ? ` (request ${response.request_id})` : '';
+      connectionFailed(s, `Soniox ${Number.isFinite(code) ? code : ''}: ${type}${requestId}`,
+        ['service_unavailable', 'internal_server_error'].includes(type) || code >= 500);
+      return;
+    }
+    if (Array.isArray(response.tokens)) {
+      // onopen does not prove authentication succeeded. Wait for a valid result.
+      clearTimeout(s.connectionTimer);
+      if (s.state !== 'stopping') {
+        if (s.state !== 'running') void publishStatus(s, 'running');
+        s.resolveStart({ success: true });
       }
-      
-      if (!isCapturing || !websocket || websocket.readyState !== WebSocket.OPEN) {
+      const subtitles = processTokens(response.tokens);
+      s.delivery = s.delivery.then(() => chrome.runtime.sendMessage({
+        type: 'SUBTITLE_UPDATE', tabId: s.tabId, subtitles
+      })).catch(() => {});
+    }
+    if (response.finished) void completeSession(s);
+  };
+  ws.onerror = () => connectionFailed(s, 'Network connection failed.', true);
+  ws.onclose = () => connectionFailed(s, 'Soniox connection closed before completion.', true);
+}
+
+async function startCapture(streamId, config, tabId) {
+  if (session) return { success: false, error: 'A capture session is already active.' };
+  const s = {
+    tabId, config, retries: 0, completed: false, ws: null,
+    delivery: Promise.resolve(), resampler: { phase: 0, sum: 0, count: 0 }
+  };
+  session = s;
+  const started = new Promise(resolve => { s.resolveStart = resolve; });
+  void setupCapture(s, streamId).catch(() => completeSession(s, 'Audio setup failed.'));
+  return started;
+}
+
+async function setupCapture(s, streamId) {
+  await publishStatus(s, 'connecting');
+  if (s.completed) return;
+  s.setupTimer = setTimeout(() => {
+    void completeSession(s, 'Tab audio setup timed out. Reload the tab and try again.');
+  }, CONNECTION_TIMEOUT_MS);
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } }, video: false
+    });
+    if (s.completed || s.state === 'stopping') {
+      stream.getTracks().forEach(track => track.stop());
+      return;
+    }
+    s.stream = stream;
+    stream.getTracks().forEach(track => {
+      track.onended = () => { void completeSession(s, 'Tab audio capture ended.'); };
+    });
+    s.audio = document.createElement('audio');
+    s.audio.srcObject = stream;
+    document.body.appendChild(s.audio);
+    await s.audio.play();
+    if (s.completed) return;
+    s.context = new AudioContext({ sampleRate: 48000 });
+    if (s.context.state === 'suspended') await s.context.resume();
+    if (s.completed) return;
+    const source = s.context.createMediaStreamSource(stream);
+    s.processor = s.context.createScriptProcessor(4096, 1, 1);
+    s.processor.onaudioprocess = event => {
+      if (s.completed || s.state === 'stopping' || s.ws?.readyState !== WebSocket.OPEN) return;
+      if (s.ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+        connectionFailed(s, 'Network is too slow; audio upload is falling behind.', true);
         return;
       }
-      
-      const inputData = event.inputBuffer.getChannelData(0);
-      const downsampled = downsampleBuffer(inputData, audioContext.sampleRate, 16000);
-      const pcmData = floatTo16BitPCM(downsampled);
-      
-      websocket.send(pcmData.buffer);
+      const data = downsampleBuffer(event.inputBuffer.getChannelData(0), s.context.sampleRate, 16000, s.resampler);
+      try { s.ws.send(floatTo16BitPCM(data).buffer); }
+      catch { connectionFailed(s, 'Audio upload failed.', true); }
     };
-    
-    // 先连接音频处理管道，确保 onaudioprocess 被调用
-    source.connect(scriptProcessor);
-    scriptProcessor.connect(audioContext.destination);
-    console.log('[Offscreen] Audio processing pipeline connected');
-    
-    // 然后再连接 WebSocket
-    connectWebSocket(config);
-    
-    isCapturing = true;
-    console.log('[Offscreen] Capture started successfully');
-    
-    return { success: true };
-  } catch (err) {
-    console.error('[Offscreen] Error starting capture:', err);
-    stopCapture();
-    return { success: false, error: err.message };
+    source.connect(s.processor);
+    s.processor.connect(s.context.destination);
+    clearTimeout(s.setupTimer);
+    connectWebSocket(s);
+  } catch {
+    await completeSession(s, 'Cannot capture or play tab audio. Reload the tab and try again.');
   }
+  return;
 }
 
 function stopCapture() {
-  console.log('[Offscreen] Stopping capture');
-  isCapturing = false;
-  
-  if (websocket) {
-    if (websocket.readyState === WebSocket.OPEN) {
-      console.log('[Offscreen] Sending end-of-audio signal');
-      websocket.send('');
-    }
-    websocket.close();
-    websocket = null;
+  const s = session;
+  if (!s) return Promise.resolve({ success: true });
+  if (s.stopPromise) return s.stopPromise;
+  s.stopPromise = new Promise(resolve => { s.resolveStop = resolve; });
+  if (s.completed) return s.stopPromise;
+  void publishStatus(s, 'stopping');
+  clearTimeout(s.retryTimer);
+  clearTimeout(s.connectionTimer);
+  clearInterval(s.keepaliveTimer);
+  releaseAudio(s);
+  if (s.ws?.readyState === WebSocket.OPEN) {
+    s.finishTimer = setTimeout(() => {
+      void completeSession(s, 'Timed out waiting for final subtitles; the last sentence may be incomplete.');
+    }, FINISH_TIMEOUT_MS);
+    try { s.ws.send(''); }
+    catch { void completeSession(s, 'Could not finish the stream.'); }
+  } else {
+    void completeSession(s);
   }
-  
-  if (scriptProcessor) {
-    scriptProcessor.disconnect();
-    scriptProcessor = null;
-  }
-  
-  if (audioContext) {
-    audioContext.close();
-    audioContext = null;
-  }
-  
-  if (audioElement) {
-    audioElement.pause();
-    audioElement.srcObject = null;
-    audioElement.remove();
-    audioElement = null;
-    console.log('[Offscreen] Audio element removed');
-  }
-  
-  if (mediaStream) {
-    mediaStream.getTracks().forEach(track => {
-      console.log('[Offscreen] Stopping track:', track.kind);
-      track.stop();
-    });
-    mediaStream = null;
-  }
-  
-  finalTokens = [];
-  sentFinalCount = 0;
-  currentConfig = null;
-  
-  console.log('[Offscreen] Capture stopped');
+  return s.stopPromise;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('[Offscreen] Received message:', message.type);
-  
-  if (message.type === 'OFFSCREEN_START_CAPTURE') {
-    startCapture(message.streamId, message.config)
-      .then(result => {
-        console.log('[Offscreen] Start capture result:', result);
-        sendResponse(result);
-      })
-      .catch(err => {
-        console.error('[Offscreen] Start capture error:', err);
-        sendResponse({ success: false, error: err.message });
-      });
-    return true;
-  }
-  
-  if (message.type === 'OFFSCREEN_STOP_CAPTURE') {
-    stopCapture();
-    sendResponse({ success: true });
+  if (message.type === 'OFFSCREEN_GET_STATUS') {
+    sendResponse(lastStatus);
     return false;
   }
-  
+  if (message.type === 'OFFSCREEN_START_CAPTURE') {
+    startCapture(message.streamId, message.config, message.tabId).then(sendResponse);
+    return true;
+  }
+  if (message.type === 'OFFSCREEN_STOP_CAPTURE') {
+    stopCapture().then(sendResponse);
+    return true;
+  }
   return false;
 });

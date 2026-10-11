@@ -1,3 +1,6 @@
+(() => {
+if (globalThis.__sonioxContentLoaded) return;
+globalThis.__sonioxContentLoaded = true;
 console.log('[Content] Content script loaded');
 
 let subtitleContainer = null;
@@ -228,6 +231,11 @@ function removeSubtitleOverlay() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('[Content] Received message:', message.type);
   
+  if (message.type === 'SONIOX_PING') {
+    sendResponse({ ready: true });
+    return false;
+  }
+
   if (message.type === 'SUBTITLE_UPDATE') {
     updateSubtitles(message.subtitles);
     sendResponse({ success: true });
@@ -261,3 +269,5 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 loadSettings();
 console.log('[Content] Message listener registered');
+
+})();

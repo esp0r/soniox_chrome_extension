@@ -1,162 +1,132 @@
-console.log('[Background] Service worker started');
+let starting = null;
+let stopping = null;
+let creatingOffscreen = null;
+let cancelStart = false;
+let setupStatus = null;
+const ACTIVE_STATES = ['connecting', 'running', 'reconnecting', 'stopping'];
 
-let offscreenDocumentCreated = false;
-let currentTabId = null;
-
-async function ensureOffscreenDocument() {
-  console.log('[Background] Checking offscreen document');
-  
-  const existingContexts = await chrome.runtime.getContexts({
-    contextTypes: ['OFFSCREEN_DOCUMENT']
-  });
-  
-  if (existingContexts.length > 0) {
-    console.log('[Background] Offscreen document already exists');
-    offscreenDocumentCreated = true;
-    return;
-  }
-  
-  console.log('[Background] Creating offscreen document');
-  await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: ['USER_MEDIA'],
-    justification: 'Capture tab audio for speech-to-text transcription'
-  });
-  offscreenDocumentCreated = true;
-  console.log('[Background] Offscreen document created');
+async function hasOffscreenDocument() {
+  return (await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] })).length > 0;
 }
 
-async function closeOffscreenDocument() {
-  console.log('[Background] Closing offscreen document');
-  if (offscreenDocumentCreated) {
-    try {
-      await chrome.offscreen.closeDocument();
-      offscreenDocumentCreated = false;
-      console.log('[Background] Offscreen document closed');
-    } catch (err) {
-      console.log('[Background] Error closing offscreen document:', err);
+async function ensureOffscreenDocument() {
+  if (creatingOffscreen) return creatingOffscreen;
+  creatingOffscreen = (async () => {
+    if (!await hasOffscreenDocument()) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html', reasons: ['USER_MEDIA'],
+        justification: 'Capture tab audio for speech-to-text transcription'
+      });
     }
+  })();
+  try { await creatingOffscreen; } finally { creatingOffscreen = null; }
+}
+
+async function saveStatus(status) {
+  await chrome.storage.local.set({ captureStatus: status, isCapturing: ACTIVE_STATES.includes(status.state) });
+  return status;
+}
+
+async function getStatus() {
+  if (setupStatus) return setupStatus;
+  const stored = (await chrome.storage.local.get('captureStatus')).captureStatus;
+  if (await hasOffscreenDocument()) {
+    try {
+      const status = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_GET_STATUS' });
+      if (status?.state) {
+        // Setup runs before the offscreen session starts. Preserve its status/errors.
+        if (status.state === 'idle' && stored?.state === 'error') return stored;
+        return status;
+      }
+    } catch { /* The document may have closed during the query. */ }
   }
+  if (stored?.state === 'error') return stored;
+  return saveStatus({ state: 'idle', tabId: null, error: null });
+}
+
+async function injectContentScript(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'SONIOX_PING' });
+    if (response?.ready) return;
+  } catch { /* A newly loaded extension may not have injected this tab yet. */ }
+  await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] });
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+}
+
+function handleStartCapture(tabId, config) {
+  if (starting || stopping) return Promise.resolve({ success: false, error: 'Capture is busy. Please wait.' });
+  cancelStart = false;
+  starting = (async () => {
+    const status = await getStatus();
+    if (ACTIVE_STATES.includes(status.state)) return { success: false, error: 'Stop the current capture first.' };
+    try {
+      if (!config?.apiKey?.trim()) throw new Error('Please enter your API key.');
+      if (config.sourceLang === config.targetLang) throw new Error('Source and target languages must be different.');
+      setupStatus = { state: 'connecting', tabId, error: null };
+      await saveStatus(setupStatus);
+      await injectContentScript(tabId);
+      await chrome.tabs.sendMessage(tabId, { type: 'HIDE_SUBTITLE' });
+      await ensureOffscreenDocument();
+      if (cancelStart) throw new Error('Capture cancelled.');
+      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+      if (cancelStart) throw new Error('Capture cancelled.');
+      setupStatus = null;
+      const result = await chrome.runtime.sendMessage({
+        type: 'OFFSCREEN_START_CAPTURE', streamId, tabId,
+        config: { ...config, apiKey: config.apiKey.trim() }
+      });
+      if (!result) throw new Error('Audio capture did not respond.');
+      return result;
+    } catch (error) {
+      const message = cancelStart ? null : 'Cannot start capture: ' + error.message;
+      setupStatus = null;
+      await saveStatus({ state: message ? 'error' : 'idle', tabId, error: message });
+      return { success: false, error: message || 'Capture cancelled.' };
+    }
+  })();
+  starting.finally(() => { starting = null; }).catch(() => {});
+  return starting;
+}
+
+function handleStopCapture() {
+  if (stopping) return stopping;
+  cancelStart = true;
+  stopping = (async () => {
+    // If setup has not sent START yet, cancelStart prevents it from doing so.
+    let result = { success: true };
+    if (await hasOffscreenDocument()) {
+      result = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_CAPTURE' }) || result;
+    }
+    if (starting) await starting;
+    const status = await getStatus();
+    await saveStatus(status);
+    // Keep the final subtitle visible and the idle document available for status queries.
+    return result;
+  })();
+  stopping.finally(() => { stopping = null; }).catch(() => {});
+  return stopping;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('[Background] Received message:', message.type, message);
-  
-  if (message.type === 'START_CAPTURE') {
-    handleStartCapture(message.tabId, message.config)
-      .then(result => {
-        console.log('[Background] Start capture result:', result);
-        sendResponse(result);
-      })
-      .catch(err => {
-        console.error('[Background] Start capture error:', err);
-        sendResponse({ success: false, error: err.message });
-      });
+  let work;
+  if (message.type === 'START_CAPTURE') work = handleStartCapture(message.tabId, message.config);
+  if (message.type === 'STOP_CAPTURE') work = handleStopCapture();
+  if (message.type === 'GET_CAPTURE_STATUS') work = getStatus();
+  const fromOffscreen = sender.url === chrome.runtime.getURL('offscreen.html');
+  if (message.type === 'CAPTURE_STATE' && fromOffscreen) work = saveStatus(message.status);
+  if (message.type === 'SUBTITLE_UPDATE' && fromOffscreen) {
+    // Route by the session's tab ID, not a service worker global that can disappear.
+    work = chrome.tabs.sendMessage(message.tabId, message).catch(() => ({ success: false }));
+  }
+  if (work) {
+    work.then(sendResponse, () => sendResponse({ success: false, error: 'Extension operation failed.' }));
     return true;
   }
-  
-  if (message.type === 'STOP_CAPTURE') {
-    handleStopCapture()
-      .then(() => {
-        console.log('[Background] Stop capture completed');
-        sendResponse({ success: true });
-      })
-      .catch(err => {
-        console.error('[Background] Stop capture error:', err);
-        sendResponse({ success: false, error: err.message });
-      });
-    return true;
-  }
-  
-  if (message.type === 'SUBTITLE_UPDATE') {
-    console.log('[Background] Forwarding subtitle update to tab:', currentTabId);
-    if (currentTabId) {
-      chrome.tabs.sendMessage(currentTabId, message).catch(err => {
-        console.log('[Background] Error sending to content script:', err);
-      });
-    }
-    return false;
-  }
-  
-  if (message.type === 'CAPTURE_ERROR') {
-    console.error('[Background] Capture error from offscreen:', message.error);
-    handleStopCapture();
-    return false;
-  }
-  
   return false;
 });
 
-async function injectContentScript(tabId) {
-  console.log('[Background] Injecting content script to tab:', tabId);
-  
-  try {
-    await chrome.scripting.insertCSS({
-      target: { tabId },
-      files: ['content.css']
-    });
-    console.log('[Background] CSS injected');
-    
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content.js']
-    });
-    console.log('[Background] Content script injected');
-  } catch (err) {
-    console.log('[Background] Error injecting content script:', err);
-    throw err;
-  }
-}
-
-async function handleStartCapture(tabId, config) {
-  console.log('[Background] Starting capture for tab:', tabId);
-  currentTabId = tabId;
-  
-  await injectContentScript(tabId);
-  await ensureOffscreenDocument();
-  
-  console.log('[Background] Getting tab capture stream ID');
-  const streamId = await chrome.tabCapture.getMediaStreamId({
-    targetTabId: tabId
-  });
-  console.log('[Background] Got stream ID:', streamId);
-  
-  console.log('[Background] Sending start message to offscreen');
-  const response = await chrome.runtime.sendMessage({
-    type: 'OFFSCREEN_START_CAPTURE',
-    streamId,
-    config
-  });
-  
-  console.log('[Background] Offscreen response:', response);
-  return response;
-}
-
-async function handleStopCapture() {
-  console.log('[Background] Stopping capture');
-  
-  try {
-    await chrome.runtime.sendMessage({ type: 'OFFSCREEN_STOP_CAPTURE' });
-  } catch (err) {
-    console.log('[Background] Error sending stop to offscreen:', err);
-  }
-  
-  if (currentTabId) {
-    try {
-      await chrome.tabs.sendMessage(currentTabId, { type: 'HIDE_SUBTITLE' });
-    } catch (err) {
-      console.log('[Background] Error sending hide to content:', err);
-    }
-  }
-  
-  currentTabId = null;
-  await closeOffscreenDocument();
-}
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === currentTabId) {
-    console.log('[Background] Captured tab was closed');
-    handleStopCapture();
-    chrome.storage.local.set({ isCapturing: false });
-  }
+chrome.tabs.onRemoved.addListener(tabId => {
+  void getStatus().then(status => {
+    if (status.tabId === tabId && ACTIVE_STATES.includes(status.state)) return handleStopCapture();
+  }).catch(() => {});
 });

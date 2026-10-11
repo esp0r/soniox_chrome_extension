@@ -15,7 +15,7 @@ const maxLinesValue = document.getElementById('maxLinesValue');
 async function loadSettings() {
   console.log('[Popup] Loading settings from storage');
   const result = await chrome.storage.local.get([
-    'apiKey', 'sourceLang', 'targetLang', 'isCapturing',
+    'apiKey', 'sourceLang', 'targetLang',
     'fontSize', 'displayMode', 'maxLines'
   ]);
 
@@ -32,14 +32,13 @@ async function loadSettings() {
     maxLinesValue.textContent = result.maxLines;
   }
   
-  updateUI(result.isCapturing);
-  console.log('[Popup] Settings loaded, isCapturing:', result.isCapturing);
+  await refreshStatus();
 }
 
 async function saveSettings() {
   console.log('[Popup] Saving settings');
   await chrome.storage.local.set({
-    apiKey: apiKeyInput.value,
+    apiKey: apiKeyInput.value.trim(),
     sourceLang: sourceLangSelect.value,
     targetLang: targetLangSelect.value,
     displayMode: displayModeSelect.value,
@@ -48,19 +47,29 @@ async function saveSettings() {
   });
 }
 
-function updateUI(isCapturing) {
-  if (isCapturing) {
-    startBtn.style.display = 'none';
-    stopBtn.style.display = 'block';
-    statusDiv.className = 'status running';
-    statusDiv.textContent = '🔴 Capturing audio...';
-  } else {
-    startBtn.style.display = 'block';
-    stopBtn.style.display = 'none';
-    statusDiv.className = 'status idle';
-    statusDiv.textContent = 'Ready to capture';
-  }
+function updateUI(status = { state: 'idle' }) {
+  const active = ['connecting', 'running', 'reconnecting', 'stopping'].includes(status.state);
+  startBtn.style.display = active ? 'none' : 'block';
+  stopBtn.style.display = active ? 'block' : 'none';
+  stopBtn.disabled = status.state === 'stopping';
+  statusDiv.className = active ? 'status running' : 'status idle';
+  const labels = {
+    idle: 'Ready to capture', connecting: 'Connecting to Soniox...',
+    running: 'Capturing audio...', reconnecting: 'Reconnecting... audio during interruption may be lost.',
+    stopping: 'Finishing the last subtitles...'
+  };
+  statusDiv.textContent = labels[status.state] || 'Ready to capture';
+  if (status.error) showError(status.error);
 }
+
+async function refreshStatus() {
+  const status = await chrome.runtime.sendMessage({ type: 'GET_CAPTURE_STATUS' });
+  if (status?.state) updateUI(status);
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.captureStatus) updateUI(changes.captureStatus.newValue);
+});
 
 function showError(message) {
   statusDiv.className = 'status error';
@@ -87,13 +96,12 @@ startBtn.addEventListener('click', async () => {
     return;
   }
   
-  await saveSettings();
-  
   startBtn.disabled = true;
   statusDiv.className = 'status idle';
   statusDiv.textContent = 'Starting capture...';
   
   try {
+    await saveSettings();
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     console.log('[Popup] Current tab:', tab.id, tab.url);
     
@@ -106,12 +114,8 @@ startBtn.addEventListener('click', async () => {
         targetLang: targetLangSelect.value
       }
     });
-    
-    console.log('[Popup] Start capture response:', response);
-    
     if (response?.success) {
-      await chrome.storage.local.set({ isCapturing: true });
-      updateUI(true);
+      await refreshStatus();
     } else {
       showError(response?.error || 'Failed to start capture');
     }
@@ -124,17 +128,15 @@ startBtn.addEventListener('click', async () => {
 });
 
 stopBtn.addEventListener('click', async () => {
-  console.log('[Popup] Stop button clicked');
-  
+  stopBtn.disabled = true;
   try {
     const response = await chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' });
-    console.log('[Popup] Stop capture response:', response);
-    
-    await chrome.storage.local.set({ isCapturing: false });
-    updateUI(false);
-  } catch (err) {
-    console.error('[Popup] Error stopping capture:', err);
-    showError(err.message);
+    await refreshStatus();
+    if (!response?.success) showError(response?.error || 'Failed to stop capture');
+  } catch {
+    showError('Could not stop capture. Please reopen the popup and try again.');
+  } finally {
+    stopBtn.disabled = false;
   }
 });
 
@@ -142,4 +144,4 @@ apiKeyInput.addEventListener('change', saveSettings);
 sourceLangSelect.addEventListener('change', saveSettings);
 targetLangSelect.addEventListener('change', saveSettings);
 
-loadSettings();
+loadSettings().catch(() => showError('Could not load extension settings.'));
