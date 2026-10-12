@@ -40,6 +40,9 @@ function applySettings() {
   const baseSize = settings.fontSize;
   const lineHeight = 1.4;
 
+  // Scale frame padding and the language gap with the selected subtitle size.
+  innerContainer.style.fontSize = baseSize + 'px';
+
   if (originalTextEl) {
     originalTextEl.style.fontSize = baseSize + 'px';
     originalTextEl.style.height = (baseSize * lineHeight * settings.maxLines) + 'px';
