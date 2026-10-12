@@ -7,7 +7,9 @@ let session = null;
 let lastStatus = { state: 'idle', tabId: null, error: null };
 
 function getWebSocketConfig(config) {
+  const context = SonioxGlossary.context(config);
   return {
+    ...(context ? { context } : {}),
     model: 'stt-rt-v5',
     audio_format: 'pcm_s16le', sample_rate: 16000, num_channels: 1,
     ...(config.sourceLang && config.sourceLang !== 'auto' ? { language_hints: [config.sourceLang] } : {}),
@@ -193,6 +195,8 @@ function connectWebSocket(s) {
 
 async function startCapture(streamId, config, tabId) {
   if (session) return { success: false, error: 'A capture session is already active.' };
+  try { SonioxGlossary.context(config); }
+  catch (error) { return { success: false, error: error.message }; }
   const s = {
     tabId, config, retries: 0, completed: false, ws: null,
     delivery: Promise.resolve(), resampler: { phase: 0, sum: 0, count: 0 }

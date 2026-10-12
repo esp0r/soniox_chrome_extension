@@ -25,7 +25,7 @@ function harness() {
     async close() { this.closed = true; }
   }
   const sandbox = {
-    console, WebSocket: Socket, AudioContext,
+    console, TextEncoder, WebSocket: Socket, AudioContext,
     setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
     clearTimeout(id) { timers.delete(id); },
     setInterval(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms, interval: true }); return id; },
@@ -35,6 +35,7 @@ function harness() {
     chrome: { runtime: { onMessage: { addListener() {} }, async sendMessage(message) { messages.push(message); return { success: true }; } } }
   };
   const ctx = vm.createContext(sandbox);
+  vm.runInContext(source('glossary.js'), ctx);
   vm.runInContext(source('offscreen.js'), ctx);
   const run = script => vm.runInContext(script, ctx);
   const start = () => run("startCapture('stream', {apiKey:'test-key-not-real',sourceLang:'ja',targetLang:'zh'}, 7)");
@@ -78,6 +79,17 @@ test('auto detection omits language hints and retains the translation target', (
     assert.equal(config.enable_language_identification, true);
     assert.deepEqual(config.translation, { type: 'one_way', target_language: 'zh' });
   }
+});
+
+test('glossary reaches initial and reconnect WebSocket configuration unchanged', async () => {
+  const h = harness();
+  const started = h.run("startCapture('stream', {apiKey:'dummy',targetLang:'zh',glossaryEnabled:true,glossaryTargetLang:'zh',glossaryText:'VALORANT\\t无畏契约'},7)");
+  await flush(); h.sockets[0].open();
+  const first = JSON.parse(h.sockets[0].sent[0]);
+  assert.deepEqual(first.context, {terms:['VALORANT'],translation_terms:[{source:'VALORANT',target:'无畏契约'}]});
+  h.sockets[0].message({tokens:[]}); await started;
+  h.sockets[0].drop(); await h.fire(1000); h.sockets[1].open();
+  assert.deepEqual(JSON.parse(h.sockets[1].sent[0]).context, first.context);
 });
 
 test('bad authentication fails after open without retries or leaked capture', async () => {
@@ -294,7 +306,7 @@ test('popup follows background changes and never writes its own capture flag', a
     if (!elements.has(id)) elements.set(id,{style:{},value:'',addEventListener(){}});
     return elements.get(id);
   } };
-  vm.runInNewContext(source('popup.js'), {document,console:{log(){}},chrome:{
+  vm.runInNewContext(source('glossary.js') + '\n' + source('popup.js'), {TextEncoder,document,console:{log(){}},chrome:{
     storage:{local:{async get(){return {};},async set(value){writes.push(value);}},onChanged:{addListener(fn){changed=fn;}}},
     runtime:{async sendMessage(){return {state:'running'};}}
   }});

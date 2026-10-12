@@ -32,7 +32,7 @@
       color: #a0a0a0;
       margin-bottom: 4px;
     }
-    input, select {
+    input, select, textarea {
       width: 100%;
       padding: 8px 12px;
       border: 1px solid #3a3a5a;
@@ -41,7 +41,7 @@
       color: #fff;
       font-size: 14px;
     }
-    input:focus, select:focus {
+    input:focus, select:focus, textarea:focus {
       outline: none;
       border-color: #00d4ff;
     }
@@ -176,6 +176,23 @@
     </div>
   </div>
   
+  <details class="form-group">
+    <summary>Glossary</summary>
+    <label><input type="checkbox" id="glossaryEnabled" style="width:auto"> Use glossary</label>
+    <label for="glossaryTargetLang">Glossary translation language</label>
+    <select id="glossaryTargetLang">
+      <option value="zh">Chinese</option><option value="en">English</option>
+      <option value="ja">Japanese</option><option value="es">Spanish</option>
+      <option value="ko">Korean</option><option value="fr">French</option><option value="de">German</option>
+    </select>
+    <label for="glossaryText">One term per line. Add a tab and translation to set its translated name.</label>
+    <textarea id="glossaryText" rows="7" spellcheck="false" placeholder="VALORANT&#9;无畏契约"></textarea>
+    <div id="glossaryStatus" role="status" style="font-size:12px;margin:6px 0"></div>
+    <label for="glossaryFile">Import .tsv or .txt (replaces editor)</label>
+    <input id="glossaryFile" type="file" accept=".tsv,.txt">
+    <button id="glossaryExport" type="button">Export glossary</button>
+    <p style="font-size:12px;margin-top:6px">Saved automatically. Changes apply on the next capture. Translated names apply only when the languages match.</p>
+  </details>
   <div class="section-title">Subtitle Settings</div>
   
   <div class="form-group">
@@ -208,6 +225,7 @@
   
   <div id="status" class="status idle">Ready to capture</div>
   
+  <script src="glossary.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
